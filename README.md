@@ -1,5 +1,7 @@
 # vguild
 
+[![GitHub](https://img.shields.io/badge/github-bswrundquist%2Fvguild-blue)](https://github.com/bswrundquist/vguild)
+
 **Agent guild system for collaborative software task solving.**
 
 `vguild` models an engineering organization as a team of specialized AI agents.
@@ -71,10 +73,29 @@ All stop conditions are logged and persisted in the run summary.
 
 ## Quick Start
 
+### Run directly from GitHub (no clone needed)
+
 ```bash
-# Install
-pip install uv
-git clone <repo> vguild && cd vguild
+# Run any vguild command straight from the repo
+uvx --from git+https://github.com/bswrundquist/vguild vguild --help
+
+# Check system health
+uvx --from git+https://github.com/bswrundquist/vguild vguild doctor
+
+# List agents and orchestrators
+uvx --from git+https://github.com/bswrundquist/vguild vguild agents list
+uvx --from git+https://github.com/bswrundquist/vguild vguild orchestrators list
+
+# Dry-run a pipeline
+uvx --from git+https://github.com/bswrundquist/vguild vguild orchestrators run hotfix \
+  --task "Fix the NullPointerException in auth.login()" \
+  --dry-run
+```
+
+### Local development
+
+```bash
+git clone https://github.com/bswrundquist/vguild.git && cd vguild
 uv sync
 
 # Check system health
@@ -93,6 +114,21 @@ uv run vguild orchestrators run hotfix \
 export ANTHROPIC_API_KEY=sk-ant-...
 uv run vguild orchestrators run hotfix \
   --task-file examples/tasks/hotfix.md
+```
+
+---
+
+## Installation
+
+```bash
+# Run without installing (requires uv)
+uvx --from git+https://github.com/bswrundquist/vguild vguild --help
+
+# Or install globally
+uv tool install git+https://github.com/bswrundquist/vguild
+
+# Then use directly
+vguild --help
 ```
 
 ---
