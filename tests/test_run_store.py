@@ -9,6 +9,7 @@ import pytest
 
 from vguild.models import (
     AgentOutcome,
+    Document,
     GateDecision,
     RunStep,
     RunSummary,
@@ -126,3 +127,37 @@ class TestRunStore:
 
         runs = store.list_runs()
         assert set(runs) == {"run_a", "run_b", "run_c"}
+
+    def test_save_documents(self, tmp_path: Path) -> None:
+        store = RunStore(tmp_path)
+        run_dir = store.create_run_dir("testrun")
+        docs = [
+            Document(label="PRD", source="/tmp/prd.md", content="Requirements"),
+            Document(label="JIRA-1", source="inline", content="Bug report"),
+        ]
+        store.save_documents(run_dir, docs)
+        docs_file = run_dir / "documents.json"
+        assert docs_file.exists()
+        import json
+
+        data = json.loads(docs_file.read_text())
+        assert len(data) == 2
+        assert data[0]["label"] == "PRD"
+        assert data[1]["label"] == "JIRA-1"
+
+    def test_save_documents_empty_is_noop(self, tmp_path: Path) -> None:
+        store = RunStore(tmp_path)
+        run_dir = store.create_run_dir("testrun")
+        store.save_documents(run_dir, [])
+        assert not (run_dir / "documents.json").exists()
+
+    def test_report_includes_document_labels(self, tmp_path: Path) -> None:
+        store = RunStore(tmp_path)
+        run_dir = store.create_run_dir("testrun")
+        summary = _make_summary("testrun")
+        summary.document_labels = ["PRD", "Design Doc"]
+        store.save_summary(run_dir, summary)
+        report = (run_dir / "report.md").read_text()
+        assert "Attached Documents" in report
+        assert "- PRD" in report
+        assert "- Design Doc" in report

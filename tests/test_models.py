@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from vguild.models import AgentOutcome, OrchestratorState
+from vguild.models import AgentOutcome, Document, OrchestratorState
 
 
 class TestAgentOutcome:
@@ -79,6 +79,31 @@ class TestAgentOutcome:
         assert "status" in props
         assert "quality_score" in props
         assert "confidence_score" in props
+
+
+class TestDocument:
+    def test_create_with_defaults(self) -> None:
+        doc = Document(label="PRD", source="/tmp/prd.md", content="Hello")
+        assert doc.content_type == "text/markdown"
+        assert doc.truncated is False
+
+    def test_explicit_fields(self) -> None:
+        doc = Document(
+            label="JIRA-1234",
+            source="https://jira.example.com/JIRA-1234",
+            content='{"key": "value"}',
+            content_type="application/json",
+            truncated=True,
+        )
+        assert doc.label == "JIRA-1234"
+        assert doc.truncated is True
+        assert doc.content_type == "application/json"
+
+    def test_model_dump_roundtrip(self) -> None:
+        doc = Document(label="design", source="inline", content="Some text")
+        data = doc.model_dump()
+        doc2 = Document.model_validate(data)
+        assert doc == doc2
 
 
 class TestOrchestratorState:

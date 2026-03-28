@@ -18,11 +18,10 @@ class TestAgentsList:
         assert "planner" in result.output
 
     def test_agents_list_json(self, tmp_catalog: Path) -> None:
-        result = runner.invoke(
-            app, ["agents", "list", "--json", "--catalog", str(tmp_catalog)]
-        )
+        result = runner.invoke(app, ["agents", "list", "--json", "--catalog", str(tmp_catalog)])
         assert result.exit_code == 0
         import json
+
         data = json.loads(result.output)
         assert isinstance(data, list)
         names = [d["name"] for d in data]
@@ -63,9 +62,7 @@ class TestAgentsValidate:
 
 class TestOrchestratorsList:
     def test_orchestrators_list(self, tmp_catalog: Path) -> None:
-        result = runner.invoke(
-            app, ["orchestrators", "list", "--catalog", str(tmp_catalog)]
-        )
+        result = runner.invoke(app, ["orchestrators", "list", "--catalog", str(tmp_catalog)])
         assert result.exit_code == 0
         assert "hotfix" in result.output
 
@@ -75,6 +72,7 @@ class TestOrchestratorsList:
         )
         assert result.exit_code == 0
         import json
+
         data = json.loads(result.output)
         assert any(d["name"] == "hotfix" for d in data)
 
@@ -107,9 +105,7 @@ class TestDeployCommands:
         assert result.exit_code == 0
         assert (workspace / ".claude" / "agents" / "planner.md").exists()
 
-    def test_deploy_orchestrator_with_agents(
-        self, tmp_catalog: Path, tmp_path: Path
-    ) -> None:
+    def test_deploy_orchestrator_with_agents(self, tmp_catalog: Path, tmp_path: Path) -> None:
         workspace = tmp_path / "workspace"
         result = runner.invoke(
             app,
@@ -164,9 +160,7 @@ class TestOrchestratorsRun:
         # dry-run should succeed
         assert result.exit_code == 0
 
-    def test_run_requires_task_or_task_file(
-        self, tmp_catalog: Path, tmp_path: Path
-    ) -> None:
+    def test_run_requires_task_or_task_file(self, tmp_catalog: Path, tmp_path: Path) -> None:
         result = runner.invoke(
             app,
             [
@@ -180,3 +174,73 @@ class TestOrchestratorsRun:
             ],
         )
         assert result.exit_code != 0
+
+    def test_run_with_doc(self, tmp_catalog: Path, tmp_path: Path) -> None:
+        doc_file = tmp_path / "prd.md"
+        doc_file.write_text("# PRD\n\nBuild feature X.")
+        result = runner.invoke(
+            app,
+            [
+                "orchestrators",
+                "run",
+                "hotfix",
+                "--task",
+                "Fix the bug",
+                "--doc",
+                str(doc_file),
+                "--dry-run",
+                "--catalog",
+                str(tmp_catalog),
+                "--runs-dir",
+                str(tmp_path / "runs"),
+            ],
+        )
+        assert result.exit_code == 0
+
+    def test_run_with_multiple_docs(self, tmp_catalog: Path, tmp_path: Path) -> None:
+        doc1 = tmp_path / "prd.md"
+        doc2 = tmp_path / "jira.json"
+        doc1.write_text("Requirements")
+        doc2.write_text('{"issue": "BUG-123"}')
+        result = runner.invoke(
+            app,
+            [
+                "orchestrators",
+                "run",
+                "hotfix",
+                "--task",
+                "Fix bug",
+                "--doc",
+                str(doc1),
+                "--doc",
+                str(doc2),
+                "--dry-run",
+                "--catalog",
+                str(tmp_catalog),
+                "--runs-dir",
+                str(tmp_path / "runs"),
+            ],
+        )
+        assert result.exit_code == 0
+
+
+class TestAgentsRunWithDoc:
+    def test_run_with_doc(self, tmp_catalog: Path, tmp_path: Path) -> None:
+        doc_file = tmp_path / "context.md"
+        doc_file.write_text("Background context.")
+        result = runner.invoke(
+            app,
+            [
+                "agents",
+                "run",
+                "planner",
+                "--task",
+                "Analyze issue",
+                "--doc",
+                str(doc_file),
+                "--dry-run",
+                "--catalog",
+                str(tmp_catalog),
+            ],
+        )
+        assert result.exit_code == 0

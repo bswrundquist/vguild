@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Annotated
@@ -19,7 +21,7 @@ from vguild import __version__
 from vguild.config import GatingConfig
 from vguild.deploy import deploy_agent, deploy_orchestrator, deploy_orchestrator_with_agents
 from vguild.logging_utils import setup_logging
-from vguild.models import AgentOutcome, RunSummary
+from vguild.models import AgentOutcome, Document, RunSummary
 from vguild.orchestrators.base import OrchestratorRunner
 from vguild.registry import Registry
 from vguild.run_store import RunStore
@@ -83,10 +85,98 @@ _API_KEY_OPT = Annotated[
     typer.Option("--api-key", envvar="ANTHROPIC_API_KEY", help="Anthropic API key"),
 ]
 _VERBOSE_OPT = Annotated[bool, typer.Option("--verbose", "-v", help="Enable debug logging")]
-_DRY_RUN_OPT = Annotated[
-    bool, typer.Option("--dry-run", help="Simulate without calling the API")
-]
+_DRY_RUN_OPT = Annotated[bool, typer.Option("--dry-run", help="Simulate without calling the API")]
 _JSON_OPT = Annotated[bool, typer.Option("--json", help="Output results as JSON")]
+_DOC_OPT = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--doc",
+        "-d",
+        help='Attach a document: path [or path:label="Label"]. Use "-" for stdin.',
+    ),
+]
+
+_MAX_DOC_SIZE = 100_000  # characters per document (~25K tokens)
+_MAX_TOTAL_DOC_SIZE = 300_000  # total across all documents
+
+_EXTENSION_CONTENT_TYPES: dict[str, str] = {
+    ".md": "text/markdown",
+    ".json": "application/json",
+    ".yaml": "text/yaml",
+    ".yml": "text/yaml",
+    ".txt": "text/plain",
+    ".py": "text/x-python",
+}
+
+_doc_logger = logging.getLogger(__name__)
+
+
+def _load_documents(doc_args: list[str] | None) -> list[Document]:
+    """Parse --doc arguments into Document objects."""
+    if not doc_args:
+        return []
+
+    documents: list[Document] = []
+    total_size = 0
+    for raw in doc_args:
+        label, source, content, truncated = _parse_doc_arg(raw)
+
+        remaining = _MAX_TOTAL_DOC_SIZE - total_size
+        if remaining <= 0:
+            _doc_logger.warning("Document budget exhausted, skipping: %s", label)
+            continue
+        if len(content) > remaining:
+            content = content[:remaining] + "\n\n[... truncated (budget) ...]"
+            truncated = True
+
+        total_size += len(content)
+        content_type = _guess_content_type(source)
+        documents.append(
+            Document(
+                label=label,
+                source=source,
+                content=content,
+                content_type=content_type,
+                truncated=truncated,
+            )
+        )
+    return documents
+
+
+def _parse_doc_arg(raw: str) -> tuple[str, str, str, bool]:
+    """Parse a single --doc argument. Returns (label, source, content, truncated)."""
+    label_override: str | None = None
+    match = re.match(r'^(.*?):label="(.*)"$', raw)
+    if match:
+        raw = match.group(1)
+        label_override = match.group(2)
+
+    if raw == "-":
+        content = sys.stdin.read()
+        source = "inline"
+        label = label_override or "stdin"
+    else:
+        path = Path(raw)
+        if not path.exists():
+            raise typer.BadParameter(f"Document not found: {raw}")
+        content = path.read_text(encoding="utf-8")
+        source = str(path.resolve())
+        label = label_override or path.stem
+
+    truncated = False
+    if len(content) > _MAX_DOC_SIZE:
+        content = content[:_MAX_DOC_SIZE] + "\n\n[... truncated ...]"
+        truncated = True
+
+    return label, source, content, truncated
+
+
+def _guess_content_type(source: str) -> str:
+    """Infer content type from file extension."""
+    if source == "inline":
+        return "text/plain"
+    suffix = Path(source).suffix.lower()
+    return _EXTENSION_CONTENT_TYPES.get(suffix, "text/plain")
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +282,7 @@ def agents_validate(
 def agents_run(
     name: Annotated[str, typer.Argument(help="Agent name")],
     task: Annotated[str, typer.Option("--task", "-t", help="Task description")],
+    doc: _DOC_OPT = None,
     catalog: _CATALOG_OPT = None,
     runs_dir: _RUNS_OPT = Path("runs"),
     api_key: _API_KEY_OPT = None,
@@ -214,8 +305,10 @@ def agents_run(
         err.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc
 
+    documents = _load_documents(doc)
+
     try:
-        outcome = adapter.run_agent(agent_def, task)
+        outcome = adapter.run_agent(agent_def, task, documents=documents or None)
     except Exception as exc:
         err.print(f"[red]Agent failed:[/red] {exc}")
         raise typer.Exit(1) from exc
@@ -318,6 +411,7 @@ def orchestrators_run(
     task_file: Annotated[
         Path | None, typer.Option("--task-file", "-f", help="Path to task Markdown file")
     ] = None,
+    doc: _DOC_OPT = None,
     catalog: _CATALOG_OPT = None,
     runs_dir: _RUNS_OPT = Path("runs"),
     api_key: _API_KEY_OPT = None,
@@ -378,7 +472,9 @@ def orchestrators_run(
         config=config,
     )
 
-    summary = runner.run(task_text)
+    documents = _load_documents(doc)
+
+    summary = runner.run(task_text, documents=documents or None)
 
     if output_json:
         console.print_json(summary.model_dump_json(indent=2))

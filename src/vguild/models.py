@@ -8,6 +8,16 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 
+class Document(BaseModel):
+    """An external document attached to a pipeline run."""
+
+    label: str = Field(description="Short label, e.g. 'PRD', 'JIRA-1234'")
+    source: str = Field(description="Origin: file path, URL, or 'inline'")
+    content: str = Field(description="Full text content")
+    content_type: str = Field(default="text/markdown", description="MIME hint")
+    truncated: bool = Field(default=False, description="True if content was truncated")
+
+
 class AgentOutcome(BaseModel):
     """Structured output returned by every agent in the guild."""
 
@@ -88,6 +98,9 @@ class RunSummary(BaseModel):
     steps: list[RunStep] = Field(default_factory=list)
     final_status: Literal["success", "failed", "stopped", "blocked"]
     stop_condition: StopCondition | None = None
+    document_labels: list[str] = Field(
+        default_factory=list, description="Labels of documents attached to this run"
+    )
 
 
 class OrchestratorState(BaseModel):

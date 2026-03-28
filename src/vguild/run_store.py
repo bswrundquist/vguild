@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-from vguild.models import RunStep, RunSummary
+from vguild.models import Document, RunStep, RunSummary
 
 
 class RunStore:
@@ -20,6 +21,16 @@ class RunStore:
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "steps").mkdir(exist_ok=True)
         return run_dir
+
+    def save_documents(self, run_dir: Path, documents: list[Document]) -> None:
+        """Save attached documents as a JSON manifest in the run directory."""
+        if not documents:
+            return
+        docs_data = [doc.model_dump() for doc in documents]
+        (run_dir / "documents.json").write_text(
+            json.dumps(docs_data, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
     def save_step(self, run_dir: Path, step: RunStep) -> None:
         """Append a step JSON file into runs/<run_id>/steps/."""
@@ -52,9 +63,7 @@ class RunStore:
         if not self.runs_dir.exists():
             return []
         return sorted(
-            d.name
-            for d in self.runs_dir.iterdir()
-            if d.is_dir() and (d / "summary.json").exists()
+            d.name for d in self.runs_dir.iterdir() if d.is_dir() and (d / "summary.json").exists()
         )
 
 
@@ -89,6 +98,17 @@ def _render_markdown_report(summary: RunSummary) -> str:
         "",
         summary.task,
         "",
+    ]
+
+    if summary.document_labels:
+        lines += [
+            "## Attached Documents",
+            "",
+        ]
+        lines.extend(f"- {label}" for label in summary.document_labels)
+        lines.append("")
+
+    lines += [
         "## Pipeline Steps",
         "",
     ]

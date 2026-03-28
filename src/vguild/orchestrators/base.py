@@ -11,6 +11,7 @@ from vguild.config import GatingConfig
 from vguild.gating import check_progress, evaluate_gate
 from vguild.models import (
     AgentOutcome,
+    Document,
     OrchestratorDefinition,
     OrchestratorState,
     RunStep,
@@ -48,10 +49,13 @@ class OrchestratorRunner:
         self.store = store
         self.config = config or GatingConfig()
 
-    def run(self, task: str) -> RunSummary:
+    def run(self, task: str, documents: list[Document] | None = None) -> RunSummary:
         """Execute the pipeline and return a complete RunSummary."""
         run_id = make_run_id(self.orchestrator.name)
         run_dir = self.store.create_run_dir(run_id)
+        documents = documents or []
+        if documents:
+            self.store.save_documents(run_dir, documents)
         started_at = datetime.now(tz=UTC)
 
         logger.info(
@@ -88,7 +92,7 @@ class OrchestratorRunner:
             # ── Run agent (with one validation-failure retry) ─────────────
             agent_def = self.registry.get_agent(state.current_agent)
             start_time = time.monotonic()
-            outcome, error = self._run_agent_safe(agent_def, task, context)
+            outcome, error = self._run_agent_safe(agent_def, task, context, documents)
             duration = time.monotonic() - start_time
 
             if outcome is None:
@@ -181,9 +185,7 @@ class OrchestratorRunner:
             if not gate.passed:
                 if outcome.status == "blocked":
                     state.block_count += 1
-                    logger.warning(
-                        "Agent blocked (%d/%d)", state.block_count, 2
-                    )
+                    logger.warning("Agent blocked (%d/%d)", state.block_count, 2)
                     if state.block_count >= 2:
                         stop_condition = StopCondition(
                             reason="repeated_block",
@@ -253,6 +255,7 @@ class OrchestratorRunner:
             steps=state.steps,
             final_status=final_status,
             stop_condition=stop_condition,
+            document_labels=[doc.label for doc in documents],
         )
         self.store.save_summary(run_dir, summary)
 
@@ -275,10 +278,11 @@ class OrchestratorRunner:
         agent_def: Any,
         task: str,
         context: dict[str, Any],
+        documents: list[Document] | None = None,
     ) -> tuple[AgentOutcome | None, str | None]:
         """Run an agent, capturing validation errors without raising."""
         try:
-            return self.adapter.run_agent(agent_def, task, context), None
+            return self.adapter.run_agent(agent_def, task, context, documents=documents), None
         except (ValueError, Exception) as exc:
             return None, str(exc)
 

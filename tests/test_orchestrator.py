@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from vguild.config import GatingConfig
-from vguild.models import AgentDefinition, AgentOutcome
+from vguild.models import AgentDefinition, AgentOutcome, Document
 from vguild.orchestrators.base import OrchestratorRunner
 from vguild.registry import Registry
 from vguild.run_store import RunStore
@@ -49,7 +49,11 @@ class MockAdapter:
         self._calls: dict[str, int] = {}
 
     def run_agent(
-        self, agent: AgentDefinition, task: str, context: dict[str, Any] | None = None
+        self,
+        agent: AgentDefinition,
+        task: str,
+        context: dict[str, Any] | None = None,
+        documents: Any = None,
     ) -> AgentOutcome:
         name = agent.name
         idx = self._calls.get(name, 0)
@@ -66,7 +70,9 @@ class MockAdapter:
 class ErrorAdapter:
     """Raises ValueError on every call."""
 
-    def run_agent(self, agent: Any, task: str, context: Any = None) -> AgentOutcome:
+    def run_agent(
+        self, agent: Any, task: str, context: Any = None, documents: Any = None
+    ) -> AgentOutcome:
         raise ValueError("Simulated API error")
 
 
@@ -81,9 +87,7 @@ class TestHappyPath:
         adapter = MockAdapter(
             {
                 "planner": _make_outcome("planner", quality=9, recommended_next="implementer"),
-                "implementer": _make_outcome(
-                    "implementer", quality=9, recommended_next="reviewer"
-                ),
+                "implementer": _make_outcome("implementer", quality=9, recommended_next="reviewer"),
                 "reviewer": _make_outcome(
                     "reviewer", quality=9, recommended_next="release-manager"
                 ),
@@ -168,9 +172,7 @@ class TestStoppingCriteria:
         assert summary.stop_condition.reason == "no_progress"
 
     def test_needs_human_stops_pipeline(self, tmp_path: Path, registry: Registry) -> None:
-        adapter = MockAdapter(
-            {"planner": _make_outcome("planner", quality=10, needs_human=True)}
-        )
+        adapter = MockAdapter({"planner": _make_outcome("planner", quality=10, needs_human=True)})
         store = RunStore(tmp_path / "runs")
         orch = registry.get_orchestrator("hotfix")
         runner = OrchestratorRunner(
@@ -207,9 +209,7 @@ class TestStoppingCriteria:
         assert summary.stop_condition.reason == "stop_signal"
 
     def test_repeated_block_stops_pipeline(self, tmp_path: Path, registry: Registry) -> None:
-        adapter = MockAdapter(
-            {"planner": _make_outcome("planner", quality=9, status="blocked")}
-        )
+        adapter = MockAdapter({"planner": _make_outcome("planner", quality=9, status="blocked")})
         store = RunStore(tmp_path / "runs")
         orch = registry.get_orchestrator("hotfix")
         runner = OrchestratorRunner(
@@ -223,9 +223,7 @@ class TestStoppingCriteria:
         assert summary.stop_condition is not None
         assert summary.final_status in {"blocked", "failed"}
 
-    def test_validation_failure_stops_after_two(
-        self, tmp_path: Path, registry: Registry
-    ) -> None:
+    def test_validation_failure_stops_after_two(self, tmp_path: Path, registry: Registry) -> None:
         store = RunStore(tmp_path / "runs")
         orch = registry.get_orchestrator("hotfix")
         runner = OrchestratorRunner(
@@ -269,3 +267,130 @@ class TestQualityImprovement:
         assert summary.final_status == "success"
         # Planner was called twice
         assert adapter.call_counts.get("planner", 0) == 2
+
+
+class RecordingAdapter(MockAdapter):
+    """MockAdapter that also records the documents passed to each call."""
+
+    def __init__(self, outcomes: dict[str, AgentOutcome | list[AgentOutcome]]) -> None:
+        super().__init__(outcomes)
+        self.received_documents: list[list[Document] | None] = []
+
+    def run_agent(
+        self,
+        agent: AgentDefinition,
+        task: str,
+        context: dict[str, Any] | None = None,
+        documents: Any = None,
+    ) -> AgentOutcome:
+        self.received_documents.append(documents)
+        return super().run_agent(agent, task, context, documents)
+
+
+class TestDocuments:
+    def test_documents_passed_to_all_agents(self, tmp_path: Path, registry: Registry) -> None:
+        """Documents should be forwarded to every agent in the pipeline."""
+        adapter = RecordingAdapter(
+            {
+                "planner": _make_outcome("planner", quality=9, recommended_next="implementer"),
+                "implementer": _make_outcome("implementer", quality=9, recommended_next="reviewer"),
+                "reviewer": _make_outcome(
+                    "reviewer", quality=9, recommended_next="release-manager"
+                ),
+                "release-manager": _make_outcome("release-manager", quality=9),
+            }
+        )
+        store = RunStore(tmp_path / "runs")
+        orch = registry.get_orchestrator("hotfix")
+        runner = OrchestratorRunner(
+            orchestrator=orch,
+            registry=registry,
+            adapter=adapter,  # type: ignore[arg-type]
+            store=store,
+            config=GatingConfig(min_quality=8),
+        )
+        docs = [
+            Document(label="PRD", source="/tmp/prd.md", content="Product requirements"),
+            Document(label="JIRA-99", source="inline", content="Bug report details"),
+        ]
+        summary = runner.run("Fix the bug", documents=docs)
+        assert summary.final_status == "success"
+        # Every agent call received the documents
+        assert len(adapter.received_documents) == 4
+        for received in adapter.received_documents:
+            assert received == docs
+
+    def test_document_labels_in_summary(self, tmp_path: Path, registry: Registry) -> None:
+        adapter = RecordingAdapter(
+            {
+                "planner": _make_outcome("planner", quality=9, recommended_next="implementer"),
+                "implementer": _make_outcome("implementer", quality=9, recommended_next="reviewer"),
+                "reviewer": _make_outcome(
+                    "reviewer", quality=9, recommended_next="release-manager"
+                ),
+                "release-manager": _make_outcome("release-manager", quality=9),
+            }
+        )
+        store = RunStore(tmp_path / "runs")
+        orch = registry.get_orchestrator("hotfix")
+        runner = OrchestratorRunner(
+            orchestrator=orch,
+            registry=registry,
+            adapter=adapter,  # type: ignore[arg-type]
+            store=store,
+        )
+        docs = [Document(label="Design Doc", source="inline", content="Architecture")]
+        summary = runner.run("task", documents=docs)
+        assert summary.document_labels == ["Design Doc"]
+
+    def test_documents_persisted_to_run_dir(self, tmp_path: Path, registry: Registry) -> None:
+        adapter = RecordingAdapter(
+            {
+                "planner": _make_outcome("planner", quality=9, recommended_next="implementer"),
+                "implementer": _make_outcome("implementer", quality=9, recommended_next="reviewer"),
+                "reviewer": _make_outcome(
+                    "reviewer", quality=9, recommended_next="release-manager"
+                ),
+                "release-manager": _make_outcome("release-manager", quality=9),
+            }
+        )
+        store = RunStore(tmp_path / "runs")
+        orch = registry.get_orchestrator("hotfix")
+        runner = OrchestratorRunner(
+            orchestrator=orch,
+            registry=registry,
+            adapter=adapter,  # type: ignore[arg-type]
+            store=store,
+        )
+        docs = [Document(label="PRD", source="inline", content="Content here")]
+        summary = runner.run("task", documents=docs)
+        docs_file = tmp_path / "runs" / summary.run_id / "documents.json"
+        assert docs_file.exists()
+        import json
+
+        data = json.loads(docs_file.read_text())
+        assert len(data) == 1
+        assert data[0]["label"] == "PRD"
+
+    def test_no_documents_file_when_empty(self, tmp_path: Path, registry: Registry) -> None:
+        adapter = RecordingAdapter(
+            {
+                "planner": _make_outcome("planner", quality=9, recommended_next="implementer"),
+                "implementer": _make_outcome("implementer", quality=9, recommended_next="reviewer"),
+                "reviewer": _make_outcome(
+                    "reviewer", quality=9, recommended_next="release-manager"
+                ),
+                "release-manager": _make_outcome("release-manager", quality=9),
+            }
+        )
+        store = RunStore(tmp_path / "runs")
+        orch = registry.get_orchestrator("hotfix")
+        runner = OrchestratorRunner(
+            orchestrator=orch,
+            registry=registry,
+            adapter=adapter,  # type: ignore[arg-type]
+            store=store,
+        )
+        summary = runner.run("task")
+        docs_file = tmp_path / "runs" / summary.run_id / "documents.json"
+        assert not docs_file.exists()

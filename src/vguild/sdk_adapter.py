@@ -9,7 +9,7 @@ from typing import Any
 
 import anthropic
 
-from vguild.models import AgentDefinition, AgentOutcome
+from vguild.models import AgentDefinition, AgentOutcome, Document
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,7 @@ class SDKAdapter:
         agent: AgentDefinition,
         task: str,
         context: dict[str, Any] | None = None,
+        documents: list[Document] | None = None,
     ) -> AgentOutcome:
         """Run an agent for the given task and return a validated AgentOutcome.
 
@@ -79,7 +80,7 @@ class SDKAdapter:
             return self._dry_run_outcome(agent, task)
 
         system_prompt = self._build_system_prompt(agent)
-        user_message = self._build_user_message(task, context)
+        user_message = self._build_user_message(task, context, documents)
         model = _resolve_model(agent.model)
 
         logger.debug("Running agent %r with model %s", agent.name, model)
@@ -103,8 +104,16 @@ class SDKAdapter:
     def _build_system_prompt(self, agent: AgentDefinition) -> str:
         return agent.system_prompt + _STRUCTURED_OUTPUT_SUFFIX
 
-    def _build_user_message(self, task: str, context: dict[str, Any] | None) -> str:
+    def _build_user_message(
+        self,
+        task: str,
+        context: dict[str, Any] | None,
+        documents: list[Document] | None = None,
+    ) -> str:
         parts: list[str] = [f"## Task\n\n{task}"]
+
+        if documents:
+            parts.append(self._render_documents(documents))
 
         if context:
             # Carry over a repair hint if the previous attempt failed validation
@@ -137,9 +146,27 @@ class SDKAdapter:
 
         return "\n\n".join(parts)
 
-    def _extract_outcome(
-        self, agent_name: str, response: anthropic.types.Message
-    ) -> AgentOutcome:
+    @staticmethod
+    def _render_documents(documents: list[Document]) -> str:
+        """Render attached documents as labeled sections in the user message."""
+        _CODE_FENCE_LANGS: dict[str, str] = {
+            "application/json": "json",
+            "text/yaml": "yaml",
+            "text/x-python": "python",
+        }
+        sections: list[str] = []
+        for doc in documents:
+            header = f"## Reference Document: {doc.label}"
+            if doc.truncated:
+                header += " (truncated)"
+
+            lang = _CODE_FENCE_LANGS.get(doc.content_type)
+            body = f"```{lang}\n{doc.content}\n```" if lang else doc.content
+
+            sections.append(f"{header}\n\n{body}")
+        return "\n\n".join(sections)
+
+    def _extract_outcome(self, agent_name: str, response: anthropic.types.Message) -> AgentOutcome:
         """Extract and validate AgentOutcome from a tool-use response."""
         for block in response.content:
             if block.type == "tool_use" and block.name == _OUTCOME_TOOL_NAME:
