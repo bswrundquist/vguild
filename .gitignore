@@ -50,6 +50,17 @@ coverage.xml
 .env
 .env.*
 
+# Secrets & credentials
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+credentials.json
+service-account*.json
+*-credentials.json
+*.secret
+
 # IDEs
 .idea/
 .vscode/
